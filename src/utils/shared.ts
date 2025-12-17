@@ -23,7 +23,7 @@ export const DiscordUtils = {
 	status_watch(name: string): ActivityOptions {
 		return {
 			name: `${name}`,
-			type: 'STREAMING'
+			type: 'WATCHING'
 		};
 	},
 

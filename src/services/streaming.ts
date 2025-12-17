@@ -20,6 +20,7 @@ export class StreamingService {
 	private failedVideos: Set<string> = new Set();
 
 	private isSkipping: boolean = false;
+	private leaveTimeout: NodeJS.Timeout | null = null;
 	private ytDlpProcess: ChildProcess | null = null;
 
 	constructor(client: Client, streamStatus: StreamStatus) {
@@ -200,6 +201,13 @@ export class StreamingService {
 	}
 
 	private async ensureVoiceConnection(guildId: string, channelId: string, title?: string): Promise<void> {
+		// Cancel any pending leave timeout since we are starting a new video
+		if (this.leaveTimeout) {
+			clearTimeout(this.leaveTimeout);
+			this.leaveTimeout = null;
+			logger.info("New video requested, cancelled auto-disconnect timer.");
+		}
+
 		// Only join voice if not already connected
 		if (!this.streamStatus.joined || !this.streamer.voiceConnection) {
 			await this.streamer.joinVoice(guildId, channelId);
@@ -229,7 +237,7 @@ export class StreamingService {
 			width: videoParams?.width || config.width,
 			height: videoParams?.height || config.height,
 			frameRate: videoParams?.fps || config.fps,
-			bitrateVideo: config.bitrateKbps,
+			bitrateVideo: Math.min(config.bitrateKbps, config.maxBitrateKbps),
 			bitrateVideoMax: config.maxBitrateKbps,
 			videoCodec: Utils.normalizeVideoCodec(config.videoCodec),
 			hardwareAcceleratedDecoding: config.hardwareAcceleratedDecoding,
@@ -263,15 +271,15 @@ export class StreamingService {
 		// Add input options for stability and to mimic a browser
 		try {
 			const inputOptions = [
-				'-analyzeduration', '10000000', // 10 seconds
-				'-probesize', '10000000', // 10 MB
+				'-analyzeduration', '0',
+				'-probesize', '32',
 				'-fflags +igndts',
-				'-threads', 'auto', // Let FFmpeg use optimal threads
+				'-threads', '4',
 			];
 
 			if (typeof inputForFfmpeg === 'string') {
-				// Only add reconnect options for network streams
-				if (inputForFfmpeg.startsWith('http')) {
+				// Only add reconnect options for non-HLS network streams to avoid conflicts
+				if (inputForFfmpeg.startsWith('http') && !inputForFfmpeg.includes('.m3u8')) {
 					inputOptions.push(
 						'-reconnect', '1',
 						'-reconnect_streamed', '1',
@@ -576,25 +584,31 @@ export class StreamingService {
 				this.ytDlpProcess = null;
 			}
 
-			// Only leave voice if we're not playing another video
-			// Check if there are items in queue that might be played
-			const hasQueueItems = !this.queueService.isEmpty();
-			if (!hasQueueItems) {
-				this.streamer.leaveVoice();
-				this.streamStatus.joined = false;
-				this.streamStatus.joinsucc = false;
-			}
-
 			this.streamer.client.user?.setActivity(DiscordUtils.status_idle());
 
 			// Reset all status flags
 			this.streamStatus.playing = false;
 			this.streamStatus.manualStop = false;
-			this.streamStatus.channelInfo = {
-				guildId: "",
-				channelId: "",
-				cmdChannelId: "",
-			};
+
+			// Only leave voice if we're not playing another video (and checks if we should wait)
+			const hasQueueItems = !this.queueService.isEmpty();
+			if (!hasQueueItems) {
+				if (this.leaveTimeout) clearTimeout(this.leaveTimeout);
+				logger.info("Queue empty, waiting 10 minutes before leaving voice channel...");
+
+				this.leaveTimeout = setTimeout(() => {
+					logger.info("10 minutes passed, leaving voice channel.");
+					this.streamer.leaveVoice();
+					this.streamStatus.joined = false;
+					this.streamStatus.joinsucc = false;
+					this.streamStatus.channelInfo = {
+						guildId: "",
+						channelId: "",
+						cmdChannelId: "",
+					};
+					this.leaveTimeout = null;
+				}, 10 * 60 * 1000); // 10 minutes
+			}
 		} catch (error) {
 			await ErrorUtils.handleError(error, "cleanup stream status");
 		}
