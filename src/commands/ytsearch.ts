@@ -6,6 +6,8 @@ export default class YTSearchCommand extends BaseCommand {
 	name = "ytsearch";
 	description = "Search for videos on YouTube";
 	usage = "ytsearch <query>";
+	aliases = ["search", "find"];
+	category = "Media";
 
 	private mediaService: MediaService;
 

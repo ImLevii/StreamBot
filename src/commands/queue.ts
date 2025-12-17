@@ -5,7 +5,8 @@ export default class QueueCommand extends BaseCommand {
 	name = "queue";
 	description = "Display the current video queue";
 	usage = "queue";
-
+	aliases = ["q", "list"];
+	category = "Media";
 	async execute(context: CommandContext): Promise<void> {
 		const queueItems = context.streamingService.getQueueService().getQueue();
 		const currentItem = context.streamingService.getQueueService().getCurrent();

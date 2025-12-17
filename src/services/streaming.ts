@@ -6,24 +6,28 @@ import { MediaService } from './media.js';
 import { QueueService } from './queue.js';
 import { getVideoParams } from "../utils/ffmpeg.js";
 import logger from '../utils/logger.js';
+import ytdl, { downloadToTempFile, createStream } from '../utils/yt-dlp.js';
+import { ChildProcess } from 'node:child_process';
 import { DiscordUtils, ErrorUtils } from '../utils/shared.js';
 import { QueueItem, StreamStatus } from '../types/index.js';
 
 export class StreamingService {
- 	private streamer: Streamer;
- 	private mediaService: MediaService;
- 	private queueService: QueueService;
- 	private controller: AbortController | null = null;
- 	private streamStatus: StreamStatus;
- 	private failedVideos: Set<string> = new Set();
- 	private isSkipping: boolean = false;
+	private streamer: Streamer;
+	private mediaService: MediaService;
+	private queueService: QueueService;
+	private controller: AbortController | null = null;
+	private streamStatus: StreamStatus;
+	private failedVideos: Set<string> = new Set();
 
- 	constructor(client: Client, streamStatus: StreamStatus) {
- 		this.streamer = new Streamer(client);
- 		this.mediaService = new MediaService();
- 		this.queueService = new QueueService();
- 		this.streamStatus = streamStatus;
- 	}
+	private isSkipping: boolean = false;
+	private ytDlpProcess: ChildProcess | null = null;
+
+	constructor(client: Client, streamStatus: StreamStatus) {
+		this.streamer = new Streamer(client);
+		this.mediaService = new MediaService();
+		this.queueService = new QueueService();
+		this.streamStatus = streamStatus;
+	}
 
 	public getStreamer(): Streamer {
 		return this.streamer;
@@ -48,7 +52,7 @@ export class StreamingService {
 			const mediaSource = await this.mediaService.resolveMediaSource(videoSource);
 
 			if (mediaSource) {
-				const queueItem = await this.queueService.addToQueue(mediaSource, username);
+				const queueItem = await this.queueService.addToQueue(mediaSource, username, videoSource);
 				await DiscordUtils.sendSuccess(message, `Added to queue: \`${queueItem.title}\``);
 				return true;
 			} else {
@@ -149,7 +153,9 @@ export class StreamingService {
 		logger.info(`Playing from queue: ${queueItem.title} (${queueItem.url})`);
 
 		// Use streaming service to play the video with video parameters
-		await this.playVideo(message, queueItem.url, queueItem.title, videoParams);
+		// Use originalInput if available to ensure we get a fresh URL (important for Twitch/Live streams)
+		const sourceToPlay = queueItem.originalInput || queueItem.url;
+		await this.playVideo(message, sourceToPlay, queueItem.title, videoParams, queueItem.headers);
 	}
 
 	private async getVideoParameters(videoUrl: string): Promise<{ width: number, height: number, fps?: number, bitrate?: string } | undefined> {
@@ -177,7 +183,10 @@ export class StreamingService {
 		this.streamStatus.channelInfo = { guildId, channelId, cmdChannelId: config.cmdChannelId! };
 
 		if (title) {
+			logger.info(`Setting activity to: Watching ${title}`);
 			this.streamer.client.user?.setActivity(DiscordUtils.status_watch(title));
+		} else {
+			logger.warn('No title provided for activity status update');
 		}
 
 		// Wait for voice connection to be fully ready
@@ -203,19 +212,76 @@ export class StreamingService {
 		};
 	}
 
-	private async executeStream(inputForFfmpeg: any, streamOpts: any, message: Message, title: string, videoSource: string): Promise<void> {
+	private async executeStream(inputForFfmpeg: any, streamOpts: any, message: Message, title: string, videoSource: string, headers?: Record<string, string>): Promise<void> {
+		// Merge headers into stream options so prepareStream handles them correctly
+		streamOpts.customHeaders = streamOpts.customHeaders || {};
+
+		if (headers) {
+			logger.info(`Merging custom headers: ${JSON.stringify(headers)}`);
+			streamOpts.customHeaders = { ...streamOpts.customHeaders, ...headers };
+		}
+
+		// Force correct User-Agent if not present or if it's the default one (we want to override the library default)
+		// Only override if we didn't receive specific headers with a User-Agent
+		const hasCustomUserAgent = headers && headers['User-Agent'];
+		if (!hasCustomUserAgent && (!streamOpts.customHeaders['User-Agent'] || streamOpts.customHeaders['User-Agent'].includes('Chrome/107'))) {
+			logger.info("Forcing Chrome 120 User-Agent");
+			streamOpts.customHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+		}
+
+		// Enable debug logging for ffmpeg
+		streamOpts.customFfmpegFlags = ['-loglevel', 'debug'];
+
 		const { command, output: ffmpegOutput } = prepareStream(inputForFfmpeg, streamOpts, this.controller!.signal);
+
+		// Add input options for stability and to mimic a browser
+		try {
+			const inputOptions = [
+				'-analyzeduration', '10000000', // 10 seconds
+				'-probesize', '10000000', // 10 MB
+				'-fflags +igndts',
+			];
+
+			if (typeof inputForFfmpeg === 'string') {
+				inputOptions.push(
+					'-reconnect', '1',
+					'-reconnect_streamed', '1',
+					'-reconnect_delay_max', '5',
+					'-protocol_whitelist', 'file,http,https,tcp,tls,crypto'
+				);
+				if (inputForFfmpeg.includes('.m3u8')) {
+					inputOptions.push('-f', 'hls');
+				}
+			}
+
+			command.inputOptions(inputOptions);
+
+			// Headers are now handled by prepareStream via customHeaders
+		} catch (e) {
+			logger.warn("Could not add input options to ffmpeg command:", e);
+		}
+
+		command.on('start', (commandLine) => {
+			logger.info('Spawned Ffmpeg with command: ' + commandLine);
+		});
+
+
+
+		let ffmpegError: Error | null = null;
 
 		command.on("error", (err, stdout, stderr) => {
 			// Don't log error if it's due to manual stop
 			if (!this.streamStatus.manualStop && this.controller && !this.controller.signal.aborted) {
-				logger.error("An error happened with ffmpeg:", err.message);
-				if (stdout) {
-					logger.error("ffmpeg stdout:", stdout);
-				}
-				if (stderr) {
-					logger.error("ffmpeg stderr:", stderr);
-				}
+				logger.error("An error happened with ffmpeg:");
+				logger.error(`Error Message: ${err.message}`);
+				if (err.stack) logger.error(`Stack: ${err.stack}`);
+				if (stdout) logger.error(`ffmpeg stdout:\n${stdout}`);
+				if (stderr) logger.error(`ffmpeg stderr:\n${stderr}`);
+
+				logger.info("Stream Options:", JSON.stringify(streamOpts, null, 2));
+				logger.info("Input:", inputForFfmpeg);
+
+				ffmpegError = err;
 				this.controller.abort();
 			}
 		});
@@ -224,13 +290,16 @@ export class StreamingService {
 			.catch((err) => {
 				if (this.controller && !this.controller.signal.aborted) {
 					logger.error('playStream error:', err);
-					// Send error message to user
-					DiscordUtils.sendError(message, `Stream error: ${err.message || 'Unknown error'}`).catch(e =>
-						logger.error('Failed to send error message:', e)
-					);
+					// Re-throw so playVideo can handle it
+					throw err;
 				}
 				if (this.controller && !this.controller.signal.aborted) this.controller.abort();
 			});
+
+		// If we had an ffmpeg error, throw it now so playVideo handles it
+		if (ffmpegError) {
+			throw ffmpegError;
+		}
 
 		// Only log as finished if we didn't have an error and weren't manually stopped
 		if (this.controller && !this.controller.signal.aborted && !this.streamStatus.manualStop) {
@@ -299,7 +368,7 @@ export class StreamingService {
 		}
 	}
 
-	private async prepareVideoSource(message: Message, videoSource: string, title?: string): Promise<{ inputForFfmpeg: any, tempFilePath: string | null }> {
+	private async prepareVideoSource(message: Message, videoSource: string, title?: string, headers?: Record<string, string>): Promise<{ inputForFfmpeg: any, tempFilePath: string | null, headers?: Record<string, string> }> {
 		const mediaSource = await this.mediaService.resolveMediaSource(videoSource);
 
 		if (mediaSource && mediaSource.type === 'youtube' && !mediaSource.isLive) {
@@ -311,12 +380,33 @@ export class StreamingService {
 			throw new Error('Failed to prepare video source due to download failure.');
 		}
 
-		return { inputForFfmpeg: mediaSource ? mediaSource.url : videoSource, tempFilePath: null };
+		// Use yt-dlp piping for Twitch streams
+		if (mediaSource && mediaSource.type === 'twitch') {
+			logger.info(`Using yt-dlp piping for Twitch stream: ${mediaSource.url}`);
+			this.ytDlpProcess = createStream(mediaSource.url);
+
+			if (this.ytDlpProcess.stdout) {
+				if (this.ytDlpProcess.stderr) {
+					this.ytDlpProcess.stderr.on('data', (data) => {
+						logger.warn(`yt-dlp stderr: ${data.toString()}`);
+					});
+				}
+				return { inputForFfmpeg: this.ytDlpProcess.stdout, tempFilePath: null, headers: undefined };
+			} else {
+				logger.error("Failed to get stdout from yt-dlp process");
+				throw new Error("Failed to create stream from yt-dlp");
+			}
+		}
+
+		// If mediaSource has headers, use them. Otherwise use the passed headers.
+		const finalHeaders = mediaSource?.headers || headers;
+
+		return { inputForFfmpeg: mediaSource ? mediaSource.url : videoSource, tempFilePath: null, headers: finalHeaders };
 	}
 
-	private async executeStreamWorkflow(input: any, options: any, message: Message, title: string, source: string): Promise<void> {
+	private async executeStreamWorkflow(input: any, options: any, message: Message, title: string, source: string, headers?: Record<string, string>): Promise<void> {
 		this.controller = new AbortController();
-		await this.executeStream(input, options, message, title, source);
+		await this.executeStream(input, options, message, title, source, headers);
 	}
 
 	private async finalizeStream(message: Message, tempFile: string | null): Promise<void> {
@@ -337,7 +427,7 @@ export class StreamingService {
 		}
 	}
 
-	public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: string }): Promise<void> {
+	public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: string }, headers?: Record<string, string>): Promise<void> {
 		const [guildId, channelId] = [config.guildId, config.videoChannelId];
 		this.streamStatus.manualStop = false;
 
@@ -350,16 +440,70 @@ export class StreamingService {
 
 		let tempFile: string | null = null;
 		try {
-			const { inputForFfmpeg, tempFilePath } = await this.prepareVideoSource(message, videoSource, title);
+			const { inputForFfmpeg, tempFilePath, headers: finalHeaders } = await this.prepareVideoSource(message, videoSource, title, headers);
 			tempFile = tempFilePath;
 
 			await this.ensureVoiceConnection(guildId, channelId, title);
+
+			// Explicitly set activity here as well to ensure it's updated
+			if (title && this.streamer.client.user) {
+				logger.info(`Explicitly setting activity in playVideo to: Watching ${title}`);
+				this.streamer.client.user.setActivity(DiscordUtils.status_watch(title));
+			}
+
 			await DiscordUtils.sendPlaying(message, title || videoSource);
 
+			// Validate URL if it's a remote source
+
+			if (typeof inputForFfmpeg === 'string' && inputForFfmpeg.startsWith('http')) {
+				try {
+					// Use GET instead of HEAD for m3u8 to check content
+					const response = await fetch(inputForFfmpeg, {
+						method: 'GET',
+						headers: finalHeaders || {
+							'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+						}
+					});
+
+					if (!response.ok) {
+						logger.warn(`URL validation failed: ${response.status} ${response.statusText} for resolved URL`);
+					} else {
+						logger.info(`URL validation successful: ${response.status} ${response.statusText}`);
+						const contentType = response.headers.get('content-type');
+						logger.info(`Content-Type: ${contentType}`);
+
+						if (contentType && contentType.includes('text/html')) {
+							throw new Error('Source is a webpage, not a video stream');
+						}
+
+						// Preview content
+						const text = await response.text();
+						logger.info(`URL Content Preview (first 500 chars): ${text.substring(0, 500)}`);
+					}
+				} catch (error) {
+					if (error instanceof Error && error.message === 'Source is a webpage, not a video stream') {
+						throw error; // Re-throw to be caught by outer try-catch
+					}
+					logger.error(`URL validation error: ${error} for resolved URL`);
+				}
+			}
+
 			const streamOpts = this.setupStreamConfiguration(videoParams);
-			await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, title || videoSource, videoSource);
+			await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, title || videoSource, videoSource, finalHeaders);
 		} catch (error) {
-			await ErrorUtils.handleError(error, `playing video: ${title || videoSource}`);
+			const errorMsg = error instanceof Error ? error.message : String(error);
+
+			// Check for specific error indicating HTML content (VidKing/CinemaOS embed protections)
+			if (errorMsg.includes('Invalid data found when processing input') ||
+				errorMsg.includes('Could not open source file') ||
+				errorMsg === 'Source is a webpage, not a video stream') {
+
+				logger.warn(`Failed to play source (likely protected embed): ${videoSource}`);
+				await DiscordUtils.sendInfo(message, 'Stream Unavailable', 'The video source is a protected webpage and cannot be streamed directly to Voice. \n\n**Please watch using the Links provided above!** 🔗');
+			} else {
+				await ErrorUtils.handleError(error, `playing video: ${title || videoSource}`, message);
+			}
+
 			if (this.controller && !this.controller.signal.aborted) this.controller.abort();
 			this.markVideoAsFailed(videoSource);
 		} finally {
@@ -371,6 +515,12 @@ export class StreamingService {
 		try {
 			this.controller?.abort();
 			this.streamer.stopStream();
+
+			// Kill yt-dlp process if it exists
+			if (this.ytDlpProcess) {
+				this.ytDlpProcess.kill();
+				this.ytDlpProcess = null;
+			}
 
 			// Only leave voice if we're not playing another video
 			// Check if there are items in queue that might be played

@@ -2,13 +2,30 @@ import ytdl_dlp from './yt-dlp.js';
 import logger from './logger.js';
 import yts from 'play-dl';
 import { YouTubeVideo, YTResponse } from '../types/index.js';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 export class Youtube {
+	private getCookiesPath(): string | null {
+		// Look for cookies.txt in the project root (one level up from src/)
+		const cookiesPath = join(process.cwd(), 'cookies.txt');
+		return existsSync(cookiesPath) ? cookiesPath : null;
+	}
+
+	private getYtdlpOptions(baseOptions: Record<string, any> = {}): Record<string, any> {
+		const cookiesPath = this.getCookiesPath();
+		if (cookiesPath) {
+			return { ...baseOptions, cookies: cookiesPath };
+		}
+		return baseOptions;
+	}
+
 	async getVideoInfo(url: string): Promise<YouTubeVideo | null> {
 		try {
-			const videoData = await ytdl_dlp(url, { dumpSingleJson: true, noPlaylist: true }) as YTResponse;
+			const options = this.getYtdlpOptions({ dumpSingleJson: true, noPlaylist: true });
+			const videoData = await ytdl_dlp(url, options) as YTResponse;
 
-			if (typeof videoData === 'object' && videoData !== null && videoData.id && videoData.title) {
+			if (this.isValidVideoData(videoData)) {
 				return {
 					id: videoData.id,
 					title: videoData.title,
@@ -26,6 +43,13 @@ export class Youtube {
 		}
 	}
 
+	private isValidVideoData(data: any): data is { id: string; title: string; is_live?: boolean; live_status?: string } {
+		return typeof data === 'object' &&
+			data !== null &&
+			typeof data.id === 'string' &&
+			typeof data.title === 'string';
+	}
+
 	async searchAndGetPageUrl(title: string): Promise<{ pageUrl: string | null, title: string | null }> {
 		try {
 			const results = await yts.search(title, { limit: 1 });
@@ -33,7 +57,7 @@ export class Youtube {
 				logger.warn(`No video found on YouTube for title: "${title}" using play-dl.`);
 				return { pageUrl: null, title: null };
 			}
-			
+
 			return { pageUrl: results[0].url, title: results[0].title || null };
 		} catch (error) {
 			logger.error(`Video search for page URL failed for title "${title}":`, error);
@@ -55,12 +79,14 @@ export class Youtube {
 
 	async getLiveStreamUrl(youtubePageUrl: string): Promise<string | null> {
 		try {
-			const streamUrl = await ytdl_dlp(youtubePageUrl, {
+			const options = this.getYtdlpOptions({
 				getUrl: true,
-				format: 'best[protocol=https]/best[protocol=http]/best',
+				format: 'best[protocol=m3u8_native]/best[protocol=http_dash_segments]/best',
 				noPlaylist: true,
 				quiet: true,
+				noWarnings: true,
 			});
+			const streamUrl = await ytdl_dlp(youtubePageUrl, options);
 
 			if (typeof streamUrl === 'string' && streamUrl.trim()) {
 				logger.info(`Got live stream URL for ${youtubePageUrl}: ${streamUrl.trim()}`);

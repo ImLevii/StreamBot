@@ -5,7 +5,8 @@ export default class SkipCommand extends BaseCommand {
 	name = "skip";
 	description = "Skip the currently playing video";
 	usage = "skip";
-	aliases = ["next"];
+	aliases = ["next", "n"];
+	category = "Media";
 
 	async execute(context: CommandContext): Promise<void> {
 		const currentItem = context.streamingService.getQueueService().getCurrent();

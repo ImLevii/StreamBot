@@ -6,6 +6,7 @@ export abstract class BaseCommand implements Command {
 	abstract description: string;
 	abstract usage: string;
 	aliases?: string[];
+	category: string = 'General';
 
 	constructor(commandManager?: any) {
 	}
@@ -18,6 +19,10 @@ export abstract class BaseCommand implements Command {
 
 	protected async sendSuccess(message: any, description: string): Promise<void> {
 		await DiscordUtils.sendSuccess(message, description);
+	}
+
+	protected async sendStopSuccess(message: any, description: string): Promise<void> {
+		await DiscordUtils.sendStopSuccess(message, description);
 	}
 
 	protected async sendInfo(message: any, title: string, description: string): Promise<void> {

@@ -12,8 +12,8 @@ export const DiscordUtils = {
 	 */
 	status_idle(): ActivityOptions {
 		return {
-			name: config.prefix + "help",
-			type: 'WATCHING'
+			name: config.prefix + "",
+			type: 'STREAMING'
 		};
 	},
 
@@ -23,7 +23,7 @@ export const DiscordUtils = {
 	status_watch(name: string): ActivityOptions {
 		return {
 			name: `${name}`,
-			type: 'WATCHING'
+			type: 'STREAMING'
 		};
 	},
 
@@ -31,43 +31,40 @@ export const DiscordUtils = {
 	 * Send error message with reaction
 	 */
 	async sendError(message: Message, error: string): Promise<void> {
-		await message.react('❌');
-		await message.reply(`❌ **Error**: ${error}`);
+		await message.reply(`**ᴇʀʀᴏʀ**\n\`\`\`diff\n- ${error}\n\`\`\``);
 	},
 
 	/**
 	 * Send success message with reaction
 	 */
 	async sendSuccess(message: Message, description: string): Promise<void> {
-		await message.react('✅');
-		await message.channel.send(`✅ **Success**: ${description}`);
+		await message.channel.send(`**ᴄᴏɴɴᴇᴄᴛɪɴɢ ᴛᴏ sᴛʀᴇᴀᴍ...**\n\`\`\`diff\n+ ${description}\n\`\`\``);
+	},
+
+	async sendStopSuccess(message: Message, description: string): Promise<void> {
+		await message.channel.send(`**sᴛʀᴇᴀᴍ ᴇɴᴅɪɴɢ...**\n\`\`\`diff\n+ ${description}\n\`\`\``);
 	},
 
 	/**
 	 * Send info message with reaction
 	 */
 	async sendInfo(message: Message, title: string, description: string): Promise<void> {
-		await message.react('ℹ️');
-		await message.channel.send(`ℹ️ **${title}**: ${description}`);
+		await message.channel.send(`**${title}**\n\`\`\`yaml\n${description}\n\`\`\``);
 	},
 
 	/**
 	 * Send playing message with reaction
 	 */
 	async sendPlaying(message: Message, title: string): Promise<void> {
-		const content = `📽 **Now Playing**: \`${title}\``;
-		await Promise.all([
-			message.react('▶️'),
-			message.reply(content)
-		]);
+		await message.react('▶️');
+		await message.reply(`📽 **ɴᴏᴡ sᴛʀᴇᴀᴍɪɴɢ**\n\`\`\`diff\n+ ${title}\n\`\`\``);
 	},
 
 	/**
 	 * Send finish message
 	 */
 	async sendFinishMessage(message: Message): Promise<void> {
-		const content = '⏹️ **Finished**: Finished playing video.';
-		await message.channel.send(content);
+		await message.channel.send(`**sᴛʀᴇᴀᴍ ɴᴏᴡ ᴇɴᴅɪɴɢ...**\n\`\`\`fix\nsᴛʀᴇᴀᴍ ʜᴀs ᴇɴᴅᴇᴅ.\n\`\`\``);
 	},
 
 	/**
@@ -75,13 +72,14 @@ export const DiscordUtils = {
 	 */
 	async sendList(message: Message, items: string[], type?: string): Promise<void> {
 		await message.react('📋');
+		let title = '📋 Local Videos List';
 		if (type == "ytsearch") {
-			await message.reply(`📋 **Search Results**:\n${items.join('\n')}`);
+			title = '📋 Search Results';
 		} else if (type == "refresh") {
-			await message.reply(`📋 **Video list refreshed**:\n${items.join('\n')}`);
-		} else {
-			await message.channel.send(`📋 **Local Videos List**:\n${items.join('\n')}`);
+			title = '📋 Video list refreshed';
 		}
+
+		await message.channel.send(`**${title}**\n\`\`\`\n${items.join('\n')}\n\`\`\``);
 	}
 };
 
@@ -95,6 +93,7 @@ export const ErrorUtils = {
 	async handleError(error: any, context: string, message?: Message): Promise<void> {
 		logger.error(`Error in ${context}:`, error);
 
+		// Only send to discord if message is provided AND it's not a generic "handled" error that we want to suppress
 		if (message) {
 			await DiscordUtils.sendError(message, `An error occurred: ${error.message || 'Unknown error'}`);
 		}
@@ -131,10 +130,12 @@ export const GeneralUtils = {
 
 		// Check for common streaming platforms
 		return input.includes('youtube.com/') ||
-			   input.includes('youtu.be/') ||
-			   input.includes('twitch.tv/') ||
-			   input.startsWith('http://') ||
-			   input.startsWith('https://');
+			input.includes('youtu.be/') ||
+			input.includes('twitch.tv/') ||
+			input.includes('cinemaos.tech/') ||
+			input.includes('vidking.net/') ||
+			input.startsWith('http://') ||
+			input.startsWith('https://');
 	},
 
 	/**

@@ -7,8 +7,9 @@ import config from "../config.js";
 export default class ListCommand extends BaseCommand {
 	name = "list";
 	description = "Show available local videos";
-	usage = "list";
-
+	usage = "list [refresh]";
+	aliases = ["l", "files"];
+	category = "Media";
 	async execute(context: CommandContext): Promise<void> {
 		// Always refresh video list from filesystem
 		const videoFiles = fs.readdirSync(config.videosDir);

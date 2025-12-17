@@ -7,8 +7,10 @@ import logger from '../utils/logger.js';
 
 export default class PreviewCommand extends BaseCommand {
 	name = "preview";
+	aliases = ["prev", "now"];
+	category = "Media";
 	description = "Generate preview thumbnails for a video";
-	usage = "preview <video_name>";
+	usage = "preview";
 
 	async execute(context: CommandContext): Promise<void> {
 		const vid = context.args.join(' ');

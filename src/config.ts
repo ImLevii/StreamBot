@@ -85,7 +85,7 @@ export default {
 	height: process.env.STREAM_HEIGHT ? parseInt(process.env.STREAM_HEIGHT) : 720,
 	fps: process.env.STREAM_FPS ? parseInt(process.env.STREAM_FPS) : 30,
 	bitrateKbps: process.env.STREAM_BITRATE_KBPS ? parseInt(process.env.STREAM_BITRATE_KBPS) : 1000,
-	maxBitrateKbps: process.env.STREAM_MAX_BITRATE_KBPS ? parseInt(process.env.STREAM_MAX_BITRATE_KBPS) : 2500,
+	maxBitrateKbps: process.env.STREAM_MAX_BITRATE_KBPS ? parseInt(process.env.STREAM_MAX_BITRATE_KBPS) : 1500,
 	hardwareAcceleratedDecoding: process.env.STREAM_HARDWARE_ACCELERATION ? parseBoolean(process.env.STREAM_HARDWARE_ACCELERATION) : false,
 	h26xPreset: process.env.STREAM_H26X_PRESET ? parsePreset(process.env.STREAM_H26X_PRESET) : 'ultrafast',
 	videoCodec: process.env.STREAM_VIDEO_CODEC ? parseVideoCodec(process.env.STREAM_VIDEO_CODEC) : 'H264',
@@ -95,4 +95,10 @@ export default {
 	server_username: process.env.SERVER_USERNAME ? process.env.SERVER_USERNAME : 'admin',
 	server_password: process.env.SERVER_PASSWORD ? process.env.SERVER_PASSWORD : 'admin',
 	server_port: parseInt(process.env.SERVER_PORT ? process.env.SERVER_PORT : '8080'),
+
+	// FFmpeg options
+	ffmpegPath: process.env.FFMPEG_PATH ? process.env.FFMPEG_PATH : '',
+
+	// TMDB
+	tmdbApiKey: process.env.TMDB_API_KEY ? process.env.TMDB_API_KEY : '',
 }

@@ -6,7 +6,9 @@ import { ErrorUtils, GeneralUtils } from '../utils/shared.js';
 export default class PlayCommand extends BaseCommand {
 	name = "play";
 	description = "Play local video, URL, or search YouTube videos";
-	usage = "play <video_name|url|search_query>";
+	usage = "play <url|search term>";
+	aliases = ["p"];
+	category = "Media";
 
 	private mediaService: MediaService;
 

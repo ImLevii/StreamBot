@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { spawn as spawnNode, ChildProcess } from "node:child_process";
 import nodePath from "node:path";
 import process from "node:process";
 import os from "node:os";
@@ -6,8 +7,7 @@ import crypto from "node:crypto";
 import got from "got";
 import { YTFlags } from "../types/index.js";
 import logger from "./logger.js";
-import config from "../config.js";
-import { spawn } from "node:child_process";
+import { spawn } from "bun";
 
 let determinedFilename: string;
 const platform = process.platform;
@@ -17,7 +17,7 @@ if (platform === "win32") {
 	if (arch === "x64") {
 		determinedFilename = "yt-dlp.exe";
 	}
-	else if (arch === "ia32") {    
+	else if (arch === "ia32") {
 		determinedFilename = "yt-dlp_x86.exe";
 	}
 } else if (platform === "darwin") {
@@ -42,15 +42,10 @@ const filename = determinedFilename;
 const scriptsPath = nodePath.resolve(process.cwd(), "scripts");
 const exePath = nodePath.resolve(scriptsPath, filename);
 
+import { resolvedFfmpegPath } from "./ffmpeg.js";
+
 function args(url: string, options: Partial<YTFlags>): string[] {
 	const optArgs: string[] = [];
-	
-	// Add cookies file if configured
-	if (config.ytdlpCookiesPath && existsSync(config.ytdlpCookiesPath)) {
-		optArgs.push('--cookies');
-		optArgs.push(config.ytdlpCookiesPath);
-	}
-	
 	for (const [key, val] of Object.entries(options)) {
 		if (val === null || val === undefined) {
 			continue;
@@ -69,6 +64,11 @@ function args(url: string, options: Partial<YTFlags>): string[] {
 			optArgs.push(String(val));
 		}
 	}
+
+	if (resolvedFfmpegPath) {
+		optArgs.push('--ffmpeg-location', resolvedFfmpegPath);
+	}
+
 	return [url, ...optArgs];
 }
 
@@ -82,12 +82,10 @@ function json(str: string) {
 
 export async function downloadExecutable() {
 	if (!existsSync(exePath)) {
-		logger.info("yt-dlp not found, downloading...");
+		logger.info("Yt-dlp couldn't be found, trying to download...");
 		const releases = await got.get("https://api.github.com/repos/yt-dlp/yt-dlp/releases?per_page=1").json();
 		const release = releases[0];
 		const asset = release.assets.find(ast => ast.name === filename);
-		const version = release.tag_name;
-		
 		await new Promise((resolve, reject) => {
 			got.get(asset.browser_download_url).buffer().then(x => {
 				mkdirSync(scriptsPath, { recursive: true });
@@ -95,12 +93,12 @@ export async function downloadExecutable() {
 				return 0;
 			}).then(resolve).catch(reject);
 		});
-		logger.info(`yt-dlp ${version} downloaded successfully`);
+		logger.info("Yt-dlp has been downloaded.");
 	}
 }
 
 export function exec(url: string, options: Partial<YTFlags> = {}, spawnOptions: Record<string, any> = {}) {
-	return spawn(exePath, args(url, options), {
+	return spawn([exePath, ...args(url, options)], {
 		windowsHide: true,
 		...spawnOptions,
 		stdio: ["ignore", "pipe", "pipe"]
@@ -108,109 +106,146 @@ export function exec(url: string, options: Partial<YTFlags> = {}, spawnOptions: 
 }
 
 export default async function ytdl(url: string, options: Partial<YTFlags> = {}, spawnOptions: Record<string, any> = {}) {
-	return new Promise((resolve, reject) => {
-		let data = "";
-		let errorData = "";
+	let data = "";
+	let errorData = "";
 
-		const proc = exec(url, options, spawnOptions);
+	const proc = exec(url, options, spawnOptions);
 
-		proc.stdout?.on('data', (chunk) => {
-			data += chunk.toString();
-		});
+	if (proc.stdout) {
+		const reader = proc.stdout.getReader();
+		const decoder = new TextDecoder();
+		let result = await reader.read();
+		while (!result.done) {
+			data += decoder.decode(result.value, { stream: true });
+			result = await reader.read();
+		}
+		data += decoder.decode();
+	}
 
-		proc.stderr?.on('data', (chunk) => {
-			errorData += chunk.toString();
-		});
+	if (proc.stderr) {
+		const reader = proc.stderr.getReader();
+		const decoder = new TextDecoder();
+		let result = await reader.read();
+		while (!result.done) {
+			errorData += decoder.decode(result.value, { stream: true });
+			result = await reader.read();
+		}
+		errorData += decoder.decode();
+	}
 
-		proc.on('close', (exitCode) => {
-			if (exitCode !== 0) {
-				logger.error(`yt-dlp process exited with code ${exitCode}. Stderr: ${errorData}`);
-				reject(new Error(`yt-dlp failed with exit code ${exitCode}: ${errorData || data}`));
-			} else {
-				resolve(json(data));
-			}
-		});
+	const exitCode = await proc.exited;
 
-		proc.on('error', (error) => {
-			logger.error(`yt-dlp process error:`, error);
-			reject(error);
-		});
-	});
+	if (exitCode !== 0) {
+		logger.error(`yt-dlp process exited with code ${exitCode}. Stderr: ${errorData}`);
+		throw new Error(`yt-dlp failed with exit code ${exitCode}: ${errorData || data}`);
+	}
+
+	return json(data);
 }
 
 export async function downloadToTempFile(url: string, options: Partial<YTFlags> = {}): Promise<string> {
 	await downloadExecutable();
 
-	const tempDir = os.tmpdir();
-	const tempFilename = `ytdlp_temp_${crypto.randomBytes(6).toString('hex')}.mp4`;
-	const tempFilePath = nodePath.join(tempDir, tempFilename);
+	const videosDir = nodePath.resolve(process.cwd(), "videos");
+	if (!existsSync(videosDir)) {
+		mkdirSync(videosDir, { recursive: true });
+	}
+	const videoFilename = `video_${crypto.randomBytes(6).toString("hex")}.mp4`;
+	const videoFilePath = nodePath.join(videosDir, videoFilename);
 
 	const downloadOptions: Partial<YTFlags> = {
 		...options,
-		output: tempFilePath,
+		output: videoFilePath,
 		quiet: true,
 		noWarnings: true,
 	};
 
-	const proc = spawn(exePath, args(url, downloadOptions), {
+	const proc = spawn([exePath, ...args(url, downloadOptions)], {
 		windowsHide: true,
 		stdio: ["ignore", "ignore", "pipe"]
 	});
 
 	let errorData = "";
-	proc.stderr?.on('data', (chunk) => {
-		errorData += chunk.toString();
-	});
+	if (proc.stderr) {
+		const reader = proc.stderr.getReader();
+		const decoder = new TextDecoder();
+		let result = await reader.read();
+		while (!result.done) {
+			errorData += decoder.decode(result.value, { stream: true });
+			result = await reader.read();
+		}
+		errorData += decoder.decode();
+	}
 
-	const exitCode = await new Promise<number>((resolve) => {
-		proc.on('close', (code) => resolve(code || 0));
-		proc.on('error', () => resolve(1));
-	});
+	const exitCode = await proc.exited;
 
 	if (exitCode !== 0) {
-		if (existsSync(tempFilePath)) {
+		if (existsSync(videoFilePath)) {
 			try {
-				unlinkSync(tempFilePath);
+				unlinkSync(videoFilePath);
 			} catch (cleanupError) {
-				logger.warn(`Failed to cleanup temp file ${tempFilePath} after yt-dlp error:`, cleanupError);
+				logger.warn(`Failed to cleanup video file ${videoFilePath} after yt-dlp error:`, cleanupError);
 			}
 		}
-		const errorMessage = `yt-dlp failed to download to temp file. Exit code: ${exitCode}. Stderr: ${errorData.trim()}`;
+		const errorMessage = `yt-dlp failed to download video. Exit code: ${exitCode}. Stderr: ${errorData.trim()}`;
 		logger.error(errorMessage);
 		throw new Error(errorMessage);
 	}
 
-	if (!existsSync(tempFilePath)) {
-		const errorMessage = `yt-dlp exited successfully but temp file ${tempFilePath} was not created. Stderr: ${errorData.trim()}`;
+	if (!existsSync(videoFilePath)) {
+		const errorMessage = `yt-dlp exited successfully but video file ${videoFilePath} was not created. Stderr: ${errorData.trim()}`;
 		logger.error(errorMessage);
 		throw new Error(errorMessage);
 	}
-	
-	return tempFilePath;
+
+	logger.info(`yt-dlp successfully downloaded to: ${videoFilePath}`);
+	return videoFilePath;
+}
+
+export function createStream(url: string, options: Partial<YTFlags> = {}): ChildProcess {
+	const commandArgs = args(url, options);
+	commandArgs.push('-o', '-');
+	commandArgs.push('--quiet');
+	commandArgs.push('--no-warnings');
+
+	return spawnNode(exePath, commandArgs, {
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
 }
 
 export async function checkForUpdatesAndUpdate(): Promise<void> {
 	try {
 		await downloadExecutable();
-		const updateProc = spawn(exePath, ["--update"], {
+		const updateProc = spawn([exePath, "--update"], {
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 
 		let stdoutData = "";
 		let stderrData = "";
 
-		updateProc.stdout?.on('data', (chunk) => {
-			stdoutData += chunk.toString();
-		});
+		if (updateProc.stdout) {
+			const stdoutReader = updateProc.stdout.getReader();
+			const decoder = new TextDecoder();
+			let result = await stdoutReader.read();
+			while (!result.done) {
+				stdoutData += decoder.decode(result.value, { stream: true });
+				result = await stdoutReader.read();
+			}
+			stdoutData += decoder.decode();
+		}
 
-		updateProc.stderr?.on('data', (chunk) => {
-			stderrData += chunk.toString();
-		});
+		if (updateProc.stderr) {
+			const stderrReader = updateProc.stderr.getReader();
+			const decoder = new TextDecoder();
+			let result = await stderrReader.read();
+			while (!result.done) {
+				stderrData += decoder.decode(result.value, { stream: true });
+				result = await stderrReader.read();
+			}
+			stderrData += decoder.decode();
+		}
 
-		const exitCode = await new Promise<number>((resolve) => {
-			updateProc.on('close', (code) => resolve(code || 0));
-			updateProc.on('error', () => resolve(1));
-		});
+		const exitCode = await updateProc.exited;
 
 		if (exitCode === 0) {
 			if (stdoutData.includes("Updated yt-dlp to")) {

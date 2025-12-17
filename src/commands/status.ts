@@ -5,6 +5,7 @@ export default class StatusCommand extends BaseCommand {
 	name = "status";
 	description = "Show current streaming status";
 	usage = "status";
+	category = "System";
 
 	async execute(context: CommandContext): Promise<void> {
 		await this.sendInfo(context.message, 'Status',

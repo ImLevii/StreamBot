@@ -274,16 +274,16 @@ export interface CommandContext {
 }
 
 export interface StreamStatus {
- 	joined: boolean;
- 	joinsucc: boolean;
- 	playing: boolean;
- 	manualStop: boolean;
- 	channelInfo: {
- 		guildId: string;
- 		channelId: string;
- 		cmdChannelId: string;
- 	};
- 	queue: VideoQueue;
+	joined: boolean;
+	joinsucc: boolean;
+	playing: boolean;
+	manualStop: boolean;
+	channelInfo: {
+		guildId: string;
+		channelId: string;
+		cmdChannelId: string;
+	};
+	queue: VideoQueue;
 }
 
 export interface Video {
@@ -296,30 +296,33 @@ export interface Command {
 	description: string;
 	usage: string;
 	aliases?: string[];
+	category?: string;
 	execute(context: CommandContext): Promise<void>;
 }
 
 export interface MediaSource {
- 	url: string;
- 	title: string;
- 	type: 'youtube' | 'twitch' | 'local' | 'url';
- 	isLive?: boolean;
+	url: string;
+	title: string;
+	type: 'youtube' | 'twitch' | 'local' | 'url';
+	isLive?: boolean;
+	headers?: Record<string, string>;
 }
 
 export interface QueueItem {
-  	id: string;
-  	url: string;
-  	title: string;
-  	type: MediaSource['type'];
-  	isLive?: boolean;
-  	requestedBy: string;
-  	addedAt: Date;
-  	originalInput?: string;
-  	resolved?: boolean;
+	id: string;
+	url: string;
+	title: string;
+	type: MediaSource['type'];
+	isLive?: boolean;
+	requestedBy: string;
+	addedAt: Date;
+	originalInput?: string;
+	resolved?: boolean;
+	headers?: Record<string, string>;
 }
 
 export interface VideoQueue {
-  items: QueueItem[];
-  currentIndex: number;
-  isPlaying: boolean;
+	items: QueueItem[];
+	currentIndex: number;
+	isPlaying: boolean;
 }

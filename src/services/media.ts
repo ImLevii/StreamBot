@@ -1,5 +1,6 @@
 import { getStream, getVod } from 'twitch-m3u8';
 import { TwitchStream, MediaSource } from '../types/index.js';
+import got from 'got';
 import config from "../config.js";
 import logger from '../utils/logger.js';
 import { Youtube } from '../utils/youtube.js';
@@ -7,6 +8,7 @@ import ytdl, { downloadToTempFile } from '../utils/yt-dlp.js';
 import { GeneralUtils } from '../utils/shared.js';
 import { YTResponse } from '../types/index.js';
 import path from 'path';
+import { resolvedFfmpegPath } from '../utils/ffmpeg.js';
 
 export class MediaService {
 	private youtube: Youtube;
@@ -67,7 +69,11 @@ export class MediaService {
 				logger.error("No VOD URL found");
 				return null;
 			} else {
-				const twitchId = url.split('/').pop() as string;
+				const urlObj = new URL(url);
+				const pathname = urlObj.pathname;
+				// Remove leading slash if present and split
+				const parts = pathname.split('/').filter(p => p.length > 0);
+				const twitchId = parts[0]; // The username is usually the first part after domain
 				const streams = await getStream(twitchId);
 				const stream = streams.find((stream: TwitchStream) => stream.resolution === `${config.width}x${config.height}`) || streams[0];
 				if (stream?.url) {
@@ -87,6 +93,7 @@ export class MediaService {
 			const ytDlpDownloadOptions = {
 				format: `bestvideo[height<=${config.height || 720}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${config.height || 720}]+bestaudio/best[height<=${config.height || 720}]/best`,
 				noPlaylist: true,
+				ffmpegLocation: resolvedFfmpegPath,
 			};
 
 			const tempFilePath = await downloadToTempFile(url, ytDlpDownloadOptions);
@@ -95,20 +102,54 @@ export class MediaService {
 			logger.error("Failed to download YouTube video:", error);
 			return null;
 		}
-	
+
 	}
 
 	private async _resolveTwitchSource(url: string): Promise<MediaSource | null> {
-		const streamUrl = await this.getTwitchStreamUrl(url);
-		if (streamUrl) {
-			const twitchId = url.split('/').pop() as string;
-			return {
-				url: streamUrl,
-				title: `twitch.tv/${twitchId}`,
-				type: 'twitch'
-			};
+		try {
+			// Try twitch-m3u8 first (better for ads/commercials)
+			/*
+			const streamUrl = await this.getTwitchStreamUrl(url);
+			if (streamUrl) {
+				return {
+					url: streamUrl,
+					title: `twitch.tv/${url.split('/').pop()}`,
+					type: 'twitch',
+					isLive: true,
+					headers: {
+						'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+						'Referer': 'https://www.twitch.tv/'
+					}
+				};
+			}
+			*/
+
+			// Fallback to yt-dlp
+			logger.info("Resolving Twitch stream via yt-dlp...");
+			const metadata = await ytdl(url, {
+				dumpJson: true,
+				skipDownload: true,
+				noWarnings: true,
+				quiet: true
+			}) as YTResponse;
+
+			if (metadata && metadata.url) {
+				return {
+					url: metadata.url,
+					title: metadata.title || `twitch.tv/${url.split('/').pop()}`,
+					type: 'twitch',
+					isLive: true,
+					headers: {
+						...(metadata.http_headers as Record<string, string>),
+						'Referer': 'https://www.twitch.tv/'
+					}
+				};
+			}
+			return null;
+		} catch (error) {
+			logger.error("Failed to resolve Twitch stream:", error);
+			return null;
 		}
-		return null;
 	}
 
 	private _resolveLocalSource(url: string): MediaSource {
@@ -210,5 +251,77 @@ export class MediaService {
 			logger.error("Failed to search and play YouTube:", error);
 			return null;
 		}
+	}
+
+	public async searchTMDB(query: string): Promise<{ id: number, title: string, release_date: string, overview: string } | null> {
+		if (!config.tmdbApiKey) {
+			logger.error("TMDB API key is not configured.");
+			return null;
+		}
+
+		try {
+			const searchUrl = `https://api.themoviedb.org/3/search/movie?api_key=${config.tmdbApiKey}&query=${encodeURIComponent(query)}`;
+			const response = await got.get(searchUrl).json() as any;
+
+			if (response.results && response.results.length > 0) {
+				const movie = response.results[0];
+				return {
+					id: movie.id,
+					title: movie.title,
+					release_date: movie.release_date,
+					overview: movie.overview
+				};
+			}
+			return null;
+		} catch (error) {
+			logger.error("Failed to search TMDB:", error);
+			return null;
+		}
+	}
+
+	public getVidKingEmbedUrl(tmdbId: number): string {
+		return `https://www.vidking.net/embed/movie/${tmdbId}`;
+	}
+
+	public getCinemaOSEmbedUrl(tmdbId: number): string {
+		return `https://cinemaos.tech/player/${tmdbId}`;
+	}
+
+	public async searchTMDBTV(query: string): Promise<{ id: number, name: string, first_air_date: string, overview: string } | null> {
+		if (!config.tmdbApiKey) {
+			logger.error("TMDB API key is not configured.");
+			return null;
+		}
+
+		try {
+			const searchUrl = `https://api.themoviedb.org/3/search/tv?api_key=${config.tmdbApiKey}&query=${encodeURIComponent(query)}`;
+			const response = await got.get(searchUrl).json() as any;
+
+			if (response.results && response.results.length > 0) {
+				const show = response.results[0];
+				return {
+					id: show.id,
+					name: show.name,
+					first_air_date: show.first_air_date,
+					overview: show.overview
+				};
+			}
+			return null;
+		} catch (error) {
+			logger.error("Failed to search TMDB for TV:", error);
+			return null;
+		}
+	}
+
+	public getCinemaOSTVEmbedUrl(tmdbId: number, season: number, episode: number): string {
+		return `https://cinemaos.tech/player/${tmdbId}/${season}/${episode}`;
+	}
+
+	public getVidLinkMovieEmbedUrl(tmdbId: number): string {
+		return `https://vidlink.pro/movie/${tmdbId}`;
+	}
+
+	public getVidLinkTvEmbedUrl(tmdbId: number, season: number, episode: number): string {
+		return `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}`;
 	}
 }
