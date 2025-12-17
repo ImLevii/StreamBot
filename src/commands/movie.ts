@@ -41,9 +41,9 @@ export default class MovieCommand extends BaseCommand {
                 return;
             }
 
-            const vidKingUrl = this.mediaService.getVidKingEmbedUrl(movie.id);
+            const vidLinkUrl = this.mediaService.getVidLinkMovieEmbedUrl(movie.id, { autoplay: true, primaryColor: 'a29bfe' });
             const cinemaOSUrl = this.mediaService.getCinemaOSEmbedUrl(movie.id);
-            const vidLinkUrl = this.mediaService.getVidLinkMovieEmbedUrl(movie.id);
+            const vidKingUrl = this.mediaService.getVidKingEmbedUrl(movie.id);
 
             await context.message.reply({
                 content: `🎥 **${movie.title}** found!`,
@@ -53,18 +53,19 @@ export default class MovieCommand extends BaseCommand {
                     fields: [
                         { name: "Release Date", value: movie.release_date || "Unknown", inline: true },
                         { name: "TMDB ID", value: movie.id.toString(), inline: true },
-                        { name: "Watch Links", value: `[VidKing](${vidKingUrl})\n[CinemaOS](${cinemaOSUrl})\n[VidLink](${vidLinkUrl})` }
+                        { name: "Watch Links", value: `[VidLink](${vidLinkUrl})\n[CinemaOS](${cinemaOSUrl})\n[VidKing](${vidKingUrl})` }
                     ],
                     color: 0x00FF00,
-                    footer: { text: "Attempting to stream... (Note: Embed links may require browser to watch)" }
+                    footer: { text: "Attempting to stream from VidLink... (Note: Embed links may require browser to watch)" }
                 }]
             });
 
-            // Attempt to stream (Prioritizing CinemaOS as requested)
+            // Attempt to stream (Using VidLink for auto-stream)
             try {
                 if (context.message.member?.voice.channel) {
                     // Add to queue and play
-                    const success = await context.streamingService.addToQueue(context.message, cinemaOSUrl, movie.title);
+                    // We use VidLink URL here as requested
+                    const success = await context.streamingService.addToQueue(context.message, vidLinkUrl, movie.title);
                     if (success && !context.streamStatus.playing) {
                         await context.streamingService.playFromQueue(context.message);
                     }

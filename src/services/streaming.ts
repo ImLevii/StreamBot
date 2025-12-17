@@ -154,7 +154,13 @@ export class StreamingService {
 
 		// Use streaming service to play the video with video parameters
 		// Use originalInput if available to ensure we get a fresh URL (important for Twitch/Live streams)
-		const sourceToPlay = queueItem.originalInput || queueItem.url;
+		// BUT for expensive embeds (Puppeteer), use the cached resolved URL to avoid re-launching browser
+		let sourceToPlay = queueItem.originalInput || queueItem.url;
+		if (queueItem.originalInput && (queueItem.originalInput.includes('vidsrc.cc') || queueItem.originalInput.includes('vidlink.pro'))) {
+			logger.info("Using cached resolved URL for embed source to avoid re-extraction.");
+			sourceToPlay = queueItem.url;
+		}
+
 		await this.playVideo(message, sourceToPlay, queueItem.title, videoParams, queueItem.headers);
 	}
 
@@ -243,12 +249,18 @@ export class StreamingService {
 			];
 
 			if (typeof inputForFfmpeg === 'string') {
-				inputOptions.push(
-					'-reconnect', '1',
-					'-reconnect_streamed', '1',
-					'-reconnect_delay_max', '5',
-					'-protocol_whitelist', 'file,http,https,tcp,tls,crypto'
-				);
+				// Only add reconnect options for network streams
+				if (inputForFfmpeg.startsWith('http')) {
+					inputOptions.push(
+						'-reconnect', '1',
+						'-reconnect_streamed', '1',
+						'-reconnect_delay_max', '5'
+					);
+				}
+
+				// Always parse protocol whitelist
+				inputOptions.push('-protocol_whitelist', 'file,http,https,tcp,tls,crypto');
+
 				if (inputForFfmpeg.includes('.m3u8')) {
 					inputOptions.push('-f', 'hls');
 				}

@@ -60,8 +60,8 @@ export default class TVCommand extends BaseCommand {
                 return;
             }
 
+            const vidLinkUrl = this.mediaService.getVidLinkTvEmbedUrl(show.id, season, episode, { autoplay: true, primaryColor: 'a29bfe' });
             const cinemaOSUrl = this.mediaService.getCinemaOSTVEmbedUrl(show.id, season, episode);
-            const vidLinkUrl = this.mediaService.getVidLinkTvEmbedUrl(show.id, season, episode);
 
             await context.message.reply({
                 content: `📺 **${show.name}** S${season}E${episode} found!`,
@@ -71,10 +71,10 @@ export default class TVCommand extends BaseCommand {
                     fields: [
                         { name: "First Air Date", value: show.first_air_date || "Unknown", inline: true },
                         { name: "TMDB ID", value: show.id.toString(), inline: true },
-                        { name: "Watch Links", value: `[CinemaOS](${cinemaOSUrl})\n[VidLink](${vidLinkUrl})` }
+                        { name: "Watch Links", value: `[VidLink](${vidLinkUrl})\n[CinemaOS](${cinemaOSUrl})` }
                     ],
                     color: 0x00FFFF, // Cyan for TV
-                    footer: { text: "Attempting to stream... (Note: Embed links may require browser to watch)" }
+                    footer: { text: "Attempting to stream from VidLink... (Note: Embed links may require browser to watch)" }
                 }]
             });
 
@@ -82,7 +82,7 @@ export default class TVCommand extends BaseCommand {
             try {
                 if (context.message.member?.voice.channel) {
                     // Add to queue and play
-                    const success = await context.streamingService.addToQueue(context.message, cinemaOSUrl, `${show.name} S${season}E${episode}`);
+                    const success = await context.streamingService.addToQueue(context.message, vidLinkUrl, `${show.name} S${season}E${episode}`);
                     if (success && !context.streamStatus.playing) {
                         await context.streamingService.playFromQueue(context.message);
                     }

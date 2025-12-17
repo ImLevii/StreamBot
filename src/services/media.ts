@@ -9,6 +9,7 @@ import { GeneralUtils } from '../utils/shared.js';
 import { YTResponse } from '../types/index.js';
 import path from 'path';
 import { resolvedFfmpegPath } from '../utils/ffmpeg.js';
+import puppeteer from 'puppeteer';
 
 export class MediaService {
 	private youtube: Youtube;
@@ -19,10 +20,14 @@ export class MediaService {
 
 	public async resolveMediaSource(url: string): Promise<MediaSource | null> {
 		try {
+			// Check for direct source types
 			if (url.includes('youtube.com/') || url.includes('youtu.be/')) {
 				return await this._resolveYouTubeSource(url);
 			} else if (url.includes('twitch.tv/')) {
 				return await this._resolveTwitchSource(url);
+			} else if (url.includes('vidsrc.cc') || url.includes('vidlink.pro')) {
+				// Attempt to resolve stream from embed
+				return await this._resolveEmbedSource(url);
 			} else if (GeneralUtils.isLocalFile(url)) {
 				return this._resolveLocalSource(url);
 			} else if (GeneralUtils.isValidUrl(url)) {
@@ -35,6 +40,82 @@ export class MediaService {
 		} catch (error) {
 			logger.error("Failed to resolve media source:", error);
 			return null;
+		}
+	}
+
+	private async _resolveEmbedSource(url: string): Promise<MediaSource | null> {
+		let browser = null;
+		try {
+			logger.info(`Launching Puppeteer to resolve stream from: ${url}`);
+
+			browser = await puppeteer.launch({
+				headless: true, // Use true or "shell"
+				args: [
+					'--no-sandbox',
+					'--disable-setuid-sandbox',
+					'--disable-dev-shm-usage',
+					'--disable-accelerated-2d-canvas',
+					'--no-first-run',
+					'--no-zygote',
+					'--disable-gpu'
+				]
+			});
+
+			const page = await browser.newPage();
+			// Set a realistic User-Agent
+			await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+			// Promisify the stream finding logic
+			const findStream = new Promise<string>((resolve, reject) => {
+				// Listen for responses
+				page.on('response', async response => {
+					const responseUrl = response.url();
+					const resourceType = response.request().resourceType();
+
+					// Ignore obvious non-media and tracking pixels
+					if (resourceType === 'image' || resourceType === 'stylesheet' || resourceType === 'font' || responseUrl.includes('ping.gif')) return;
+
+					// Look for m3u8 playlists or mp4 files
+					// We verify it's not a query param match by checking the pathname or ensuring it's not a benign file
+					if (responseUrl.includes('.m3u8') || responseUrl.includes('.mp4')) {
+						logger.info(`Puppeteer intercepted stream URL: ${responseUrl}`);
+						resolve(responseUrl);
+					}
+				});
+
+				// Safety timeout
+				setTimeout(() => {
+					reject(new Error("Timeout waiting for stream URL"));
+				}, 15000); // 15s timeout
+			});
+
+			// Navigate to the page
+			await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+			try {
+				const streamUrl = await findStream;
+				return {
+					url: streamUrl,
+					title: 'Extracted Stream',
+					type: 'url',
+					headers: {
+						'Referer': url,
+						'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+					}
+				};
+			} catch (err) {
+				logger.warn(`Puppeteer failed to find stream: ${err}`);
+			}
+
+			return null;
+
+		} catch (error) {
+			logger.error(`Failed to resolve embed source for ${url}:`, error);
+			return null;
+		} finally {
+			if (browser) {
+				await browser.close().catch(e => logger.error("Failed to close browser:", e));
+			}
 		}
 	}
 
@@ -287,6 +368,14 @@ export class MediaService {
 		return `https://cinemaos.tech/player/${tmdbId}`;
 	}
 
+	public getVidSrcMovieEmbedUrl(tmdbId: number): string {
+		return `https://vidsrc.cc/v2/embed/movie/${tmdbId}`;
+	}
+
+	public getVidSrcTvEmbedUrl(tmdbId: number, season: number, episode: number): string {
+		return `https://vidsrc.cc/v2/embed/tv/${tmdbId}/${season}/${episode}`;
+	}
+
 	public async searchTMDBTV(query: string): Promise<{ id: number, name: string, first_air_date: string, overview: string } | null> {
 		if (!config.tmdbApiKey) {
 			logger.error("TMDB API key is not configured.");
@@ -317,11 +406,27 @@ export class MediaService {
 		return `https://cinemaos.tech/player/${tmdbId}/${season}/${episode}`;
 	}
 
-	public getVidLinkMovieEmbedUrl(tmdbId: number): string {
-		return `https://vidlink.pro/movie/${tmdbId}`;
+	public getVidLinkMovieEmbedUrl(tmdbId: number, options?: { autoplay?: boolean, primaryColor?: string }): string {
+		let url = `https://vidlink.pro/movie/${tmdbId}`;
+		const params: string[] = [];
+		if (options?.autoplay) params.push('autoplay=true');
+		if (options?.primaryColor) params.push(`primaryColor=${options.primaryColor}`);
+
+		if (params.length > 0) {
+			url += `?${params.join('&')}`;
+		}
+		return url;
 	}
 
-	public getVidLinkTvEmbedUrl(tmdbId: number, season: number, episode: number): string {
-		return `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}`;
+	public getVidLinkTvEmbedUrl(tmdbId: number, season: number, episode: number, options?: { autoplay?: boolean, primaryColor?: string }): string {
+		let url = `https://vidlink.pro/tv/${tmdbId}/${season}/${episode}`;
+		const params: string[] = [];
+		if (options?.autoplay) params.push('autoplay=true');
+		if (options?.primaryColor) params.push(`primaryColor=${options.primaryColor}`);
+
+		if (params.length > 0) {
+			url += `?${params.join('&')}`;
+		}
+		return url;
 	}
 }
