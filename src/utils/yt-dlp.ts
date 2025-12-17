@@ -158,6 +158,12 @@ export async function downloadToTempFile(url: string, options: Partial<YTFlags> 
 		output: videoFilePath,
 		quiet: true,
 		noWarnings: true,
+		// Performance optimizations
+		// concurrentFragments removed to prevent CPU starvation
+		// bufferSize defaults are usually fine, but keeping a small buffer for pipe might be okay. 
+		// Actually, let's just let yt-dlp handle it to be safe.
+		// Format selection
+		format: 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
 	};
 
 	const proc = spawn([exePath, ...args(url, downloadOptions)], {

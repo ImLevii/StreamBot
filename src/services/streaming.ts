@@ -54,6 +54,12 @@ export class StreamingService {
 			if (mediaSource) {
 				const queueItem = await this.queueService.addToQueue(mediaSource, username, videoSource);
 				await DiscordUtils.sendSuccess(message, `Added to queue: \`${queueItem.title}\``);
+
+				// Start background download for YouTube videos
+				if (queueItem.type === 'youtube' && !queueItem.isLive) {
+					this.startBackgroundDownload(queueItem);
+				}
+
 				return true;
 			} else {
 				// Fallback for unresolved sources
@@ -72,6 +78,20 @@ export class StreamingService {
 			await ErrorUtils.handleError(error, `adding to queue: ${videoSource}`, message);
 			return false;
 		}
+	}
+
+	private startBackgroundDownload(queueItem: QueueItem): void {
+		logger.info(`Starting background download for: ${queueItem.title}`);
+		queueItem.downloadPromise = this.mediaService.downloadYouTubeVideo(queueItem.url)
+			.then(path => {
+				logger.info(`Background download completed for: ${queueItem.title}`);
+				queueItem.downloadPath = path;
+				return path;
+			})
+			.catch(err => {
+				logger.error(`Background download failed for: ${queueItem.title}`, err);
+				throw err;
+			});
 	}
 
 
@@ -161,7 +181,7 @@ export class StreamingService {
 			sourceToPlay = queueItem.url;
 		}
 
-		await this.playVideo(message, sourceToPlay, queueItem.title, videoParams, queueItem.headers);
+		await this.playVideo(message, sourceToPlay, queueItem.title, videoParams, queueItem.headers, queueItem);
 	}
 
 	private async getVideoParameters(videoUrl: string): Promise<{ width: number, height: number, fps?: number, bitrate?: string } | undefined> {
@@ -246,6 +266,7 @@ export class StreamingService {
 				'-analyzeduration', '10000000', // 10 seconds
 				'-probesize', '10000000', // 10 MB
 				'-fflags +igndts',
+				'-threads', 'auto', // Let FFmpeg use optimal threads
 			];
 
 			if (typeof inputForFfmpeg === 'string') {
@@ -380,7 +401,28 @@ export class StreamingService {
 		}
 	}
 
-	private async prepareVideoSource(message: Message, videoSource: string, title?: string, headers?: Record<string, string>): Promise<{ inputForFfmpeg: any, tempFilePath: string | null, headers?: Record<string, string> }> {
+	private async prepareVideoSource(message: Message, videoSource: string, title?: string, headers?: Record<string, string>, queueItem?: QueueItem): Promise<{ inputForFfmpeg: any, tempFilePath: string | null, headers?: Record<string, string> }> {
+		// Check for pre-downloaded content first!
+		if (queueItem) {
+			if (queueItem.downloadPath && fs.existsSync(queueItem.downloadPath)) {
+				logger.info(`Using pre-downloaded file for: ${title}`);
+				return { inputForFfmpeg: queueItem.downloadPath, tempFilePath: queueItem.downloadPath, headers: undefined };
+			}
+
+			if (queueItem.downloadPromise) {
+				logger.info(`Waiting for background download to complete for: ${title}`);
+				try {
+					const path = await queueItem.downloadPromise;
+					if (path && fs.existsSync(path)) {
+						logger.info(`Background download finished just in time for: ${title}`);
+						return { inputForFfmpeg: path, tempFilePath: path, headers: undefined };
+					}
+				} catch (e) {
+					logger.warn(`Background download failed, falling back to synchronous download: ${e}`);
+				}
+			}
+		}
+
 		const mediaSource = await this.mediaService.resolveMediaSource(videoSource);
 
 		if (mediaSource && mediaSource.type === 'youtube' && !mediaSource.isLive) {
@@ -439,7 +481,7 @@ export class StreamingService {
 		}
 	}
 
-	public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: string }, headers?: Record<string, string>): Promise<void> {
+	public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: string }, headers?: Record<string, string>, queueItem?: QueueItem): Promise<void> {
 		const [guildId, channelId] = [config.guildId, config.videoChannelId];
 		this.streamStatus.manualStop = false;
 
@@ -452,7 +494,7 @@ export class StreamingService {
 
 		let tempFile: string | null = null;
 		try {
-			const { inputForFfmpeg, tempFilePath, headers: finalHeaders } = await this.prepareVideoSource(message, videoSource, title, headers);
+			const { inputForFfmpeg, tempFilePath, headers: finalHeaders } = await this.prepareVideoSource(message, videoSource, title, headers, queueItem);
 			tempFile = tempFilePath;
 
 			await this.ensureVoiceConnection(guildId, channelId, title);

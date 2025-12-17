@@ -319,6 +319,8 @@ export interface QueueItem {
 	originalInput?: string;
 	resolved?: boolean;
 	headers?: Record<string, string>;
+	downloadPath?: string;
+	downloadPromise?: Promise<string>;
 }
 
 export interface VideoQueue {
