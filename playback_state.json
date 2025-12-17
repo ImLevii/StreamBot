@@ -1,0 +1,26 @@
+{
+  "currentQueueIndex": 0,
+  "queue": [
+    {
+      "id": "mj9m3ca3nfqmtw1vhdf",
+      "url": "https://storm.vodvidl.site/proxy/file2%2Fr05umL%2BdgtShcj4i4urVLhq59sTnrLTBP9D1p~ZwCI%2BQ1gtTVnxrBpiZ1dIiebP~mGHf2SP~x~KeTYZ57%2BAP1ZAhmHs8%2B%2BgW76nY0S%2BQbQasC0LirTcUmO9LRzrYfclGOaCraOFdNYshgfNqPcLahXT2oEoLgm6e44jXXCQwI3w%3D%2FcGxheWxpc3QubTN1OA%3D%3D.m3u8?headers={%22referer%22:%22https://videostr.net/%22,%22origin%22:%22https://videostr.net%22}&host=https://cloudspark91.live",
+      "title": "Extracted Stream",
+      "type": "url",
+      "isLive": false,
+      "requestedBy": "hcraider25493",
+      "addedAt": "2025-12-17T06:09:37.515Z",
+      "originalInput": "https://vidlink.pro/movie/584?autoplay=true&primaryColor=a29bfe",
+      "resolved": false,
+      "headers": {
+        "Referer": "https://vidlink.pro/movie/584?autoplay=true&primaryColor=a29bfe",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    }
+  ],
+  "lastActive": 1765951883244,
+  "voiceChannelId": "580067678295687186",
+  "textChannelId": "585697344566067231",
+  "isPlaying": true,
+  "videoSource": "https://vidlink.pro/movie/584?autoplay=true&primaryColor=a29bfe",
+  "timestamp": 127
+}

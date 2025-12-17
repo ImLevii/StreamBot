@@ -23,6 +23,17 @@ export interface TwitchStream {
 	url: string;
 }
 
+export interface PlaybackState {
+	currentQueueIndex: number;
+	queue: QueueItem[];
+	lastActive: number;
+	voiceChannelId?: string;
+	textChannelId?: string;
+	isPlaying: boolean;
+	videoSource?: string;
+	timestamp?: number; // Estimated timestamp in seconds
+}
+
 export interface YTFormat {
 	asr: number,
 	filesize: number,

@@ -23,11 +23,100 @@ export class StreamingService {
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private ytDlpProcess: ChildProcess | null = null;
 
+	private startTime: number = 0;
+	private stateSaveInterval: NodeJS.Timeout | null = null;
+	private readonly STATE_FILE = './playback_state.json';
+
 	constructor(client: Client, streamStatus: StreamStatus) {
 		this.streamer = new Streamer(client);
 		this.mediaService = new MediaService();
 		this.queueService = new QueueService();
 		this.streamStatus = streamStatus;
+
+		// Move auto-resume to a separate init method or just call it here if async isn't an issue
+		// But constructors can't be async. We'll add a public init method.
+		this.startStateSaver();
+	}
+
+	private startStateSaver() {
+		this.stateSaveInterval = setInterval(() => {
+			if (this.streamStatus.playing) {
+				this.saveState();
+			}
+		}, 10000); // Save every 10 seconds
+	}
+
+	public saveState() {
+		const currentItem = this.queueService.getCurrent();
+		if (!currentItem) return;
+
+		const state = {
+			currentQueueIndex: this.queueService.getQueueStatus().currentIndex,
+			queue: this.queueService.getQueueStatus().items, // Use items directly or the queue object? PlaybackState expects queue: QueueItem[]
+			lastActive: Date.now(),
+			voiceChannelId: config.videoChannelId,
+			textChannelId: config.cmdChannelId, // Assuming commands come from here
+			isPlaying: this.streamStatus.playing,
+			videoSource: currentItem.originalInput || currentItem.url,
+			timestamp: Math.floor((Date.now() - this.startTime) / 1000)
+		};
+
+		try {
+			fs.writeFileSync(this.STATE_FILE, JSON.stringify(state, null, 2));
+		} catch (error) {
+			logger.error("Failed to save playback state:", error);
+		}
+	}
+
+
+	public async resumeState(client: Client): Promise<void> {
+		if (!fs.existsSync(this.STATE_FILE)) return;
+
+		try {
+			const stateRaw = fs.readFileSync(this.STATE_FILE, 'utf-8');
+			const state = JSON.parse(stateRaw);
+
+			// Check if state is stale (e.g., > 1 hour old)
+			if (Date.now() - state.lastActive > 3600000) {
+				logger.info("Playback state is too old, discarding.");
+				fs.unlinkSync(this.STATE_FILE);
+				return;
+			}
+
+			const channel = await client.channels.fetch(state.textChannelId) as any;
+			if (!channel || !channel.send) {
+				logger.error("Could not fetch text channel for resume.");
+				return;
+			}
+
+			// Create a mock message for compatibility or refactor PlayVideo to take channel
+			// Creating a mock message is easier for now to maintain compatibility with existing methods that expect Message
+			const mockMessage = {
+				author: client.user,
+				channel: channel,
+				member: {
+					voice: {
+						channel: { id: state.voiceChannelId }
+					}
+				},
+				reply: (content: any) => channel.send(content)
+			} as any;
+
+			logger.info("Resuming playback from saved state...");
+			const current = state.queue[state.currentQueueIndex];
+
+			if (current) {
+				// Restore queue first
+				// Ideally we'd set the whole queue, but for now let's just push the current item
+				await this.addToQueue(mockMessage, current.originalInput || current.url);
+
+				// Play with seek
+				await this.playVideo(mockMessage, current.originalInput || current.url, current.title, undefined, undefined, undefined, state.timestamp);
+			}
+
+		} catch (error) {
+			logger.error("Failed to resume playback state:", error);
+		}
 	}
 
 	public getStreamer(): Streamer {
@@ -200,7 +289,7 @@ export class StreamingService {
 		}
 	}
 
-	private async ensureVoiceConnection(guildId: string, channelId: string, title?: string): Promise<void> {
+	private async ensureVoiceConnection(message: Message, guildId: string, channelId: string): Promise<void> {
 		// Cancel any pending leave timeout since we are starting a new video
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
@@ -216,12 +305,7 @@ export class StreamingService {
 		this.streamStatus.playing = true;
 		this.streamStatus.channelInfo = { guildId, channelId, cmdChannelId: config.cmdChannelId! };
 
-		if (title) {
-			logger.info(`Setting activity to: Watching ${title}`);
-			this.streamer.client.user?.setActivity(DiscordUtils.status_watch(title));
-		} else {
-			logger.warn('No title provided for activity status update');
-		}
+		// Title status update handled in playVideo to avoid redundancy
 
 		// Wait for voice connection to be fully ready
 		await new Promise(resolve => setTimeout(resolve, 2000));
@@ -237,12 +321,13 @@ export class StreamingService {
 			width: videoParams?.width || config.width,
 			height: videoParams?.height || config.height,
 			frameRate: videoParams?.fps || config.fps,
-			bitrateVideo: Math.min(config.bitrateKbps, config.maxBitrateKbps),
-			bitrateVideoMax: config.maxBitrateKbps,
+			bitrateVideo: Math.min(config.bitrateKbps, 1000), // Force 1000k max
+			bitrateVideoMax: Math.min(config.maxBitrateKbps, 1000), // Force 1000k max
+			bitrateAudio: 64, // Reduce audio bitrate for stability
 			videoCodec: Utils.normalizeVideoCodec(config.videoCodec),
-			hardwareAcceleratedDecoding: config.hardwareAcceleratedDecoding,
-			minimizeLatency: false,
-			h26xPreset: config.h26xPreset
+			hardwareAcceleratedDecoding: true,
+			minimizeLatency: true,
+			h26xPreset: 'superfast'
 		};
 	}
 
@@ -276,6 +361,10 @@ export class StreamingService {
 				'-fflags +igndts',
 				'-threads', '4',
 			];
+
+			if (streamOpts.seekTime) {
+				inputOptions.unshift('-ss', streamOpts.seekTime.toString());
+			}
 
 			if (typeof inputForFfmpeg === 'string') {
 				// Only add reconnect options for non-HLS network streams to avoid conflicts
@@ -489,7 +578,7 @@ export class StreamingService {
 		}
 	}
 
-	public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: string }, headers?: Record<string, string>, queueItem?: QueueItem): Promise<void> {
+	public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: string }, headers?: Record<string, string>, queueItem?: QueueItem, seekTime?: number): Promise<void> {
 		const [guildId, channelId] = [config.guildId, config.videoChannelId];
 		this.streamStatus.manualStop = false;
 
@@ -500,76 +589,60 @@ export class StreamingService {
 			}
 		}
 
-		let tempFile: string | null = null;
 		try {
-			const { inputForFfmpeg, tempFilePath, headers: finalHeaders } = await this.prepareVideoSource(message, videoSource, title, headers, queueItem);
-			tempFile = tempFilePath;
-
-			await this.ensureVoiceConnection(guildId, channelId, title);
-
-			// Explicitly set activity here as well to ensure it's updated
-			if (title && this.streamer.client.user) {
-				logger.info(`Explicitly setting activity in playVideo to: Watching ${title}`);
-				this.streamer.client.user.setActivity(DiscordUtils.status_watch(title));
+			// Clear any existing leave timeout
+			if (this.leaveTimeout) {
+				clearTimeout(this.leaveTimeout);
+				this.leaveTimeout = null;
+				logger.info('Cancelled auto-disconnect timer.');
 			}
 
-			await DiscordUtils.sendPlaying(message, title || videoSource);
+			// Join voice channel
+			await this.ensureVoiceConnection(message, guildId, channelId);
 
-			// Validate URL if it's a remote source
+			// Prepare video source
+			const { inputForFfmpeg, tempFilePath, headers: resolvedHeaders } = await this.prepareVideoSource(message, videoSource, title, headers, queueItem);
 
-			if (typeof inputForFfmpeg === 'string' && inputForFfmpeg.startsWith('http')) {
-				try {
-					// Use GET instead of HEAD for m3u8 to check content
-					const response = await fetch(inputForFfmpeg, {
-						method: 'GET',
-						headers: finalHeaders || {
-							'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-						}
-					});
-
-					if (!response.ok) {
-						logger.warn(`URL validation failed: ${response.status} ${response.statusText} for resolved URL`);
-					} else {
-						logger.info(`URL validation successful: ${response.status} ${response.statusText}`);
-						const contentType = response.headers.get('content-type');
-						logger.info(`Content-Type: ${contentType}`);
-
-						if (contentType && contentType.includes('text/html')) {
-							throw new Error('Source is a webpage, not a video stream');
-						}
-
-						// Preview content
-						const text = await response.text();
-						logger.info(`URL Content Preview (first 500 chars): ${text.substring(0, 500)}`);
-					}
-				} catch (error) {
-					if (error instanceof Error && error.message === 'Source is a webpage, not a video stream') {
-						throw error; // Re-throw to be caught by outer try-catch
-					}
-					logger.error(`URL validation error: ${error} for resolved URL`);
-				}
-			}
-
+			// Setup stream options
 			const streamOpts = this.setupStreamConfiguration(videoParams);
-			await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, title || videoSource, videoSource, finalHeaders);
-		} catch (error) {
-			const errorMsg = error instanceof Error ? error.message : String(error);
+			streamOpts.customHeaders = resolvedHeaders;
 
-			// Check for specific error indicating HTML content (VidKing/CinemaOS embed protections)
-			if (errorMsg.includes('Invalid data found when processing input') ||
-				errorMsg.includes('Could not open source file') ||
-				errorMsg === 'Source is a webpage, not a video stream') {
+			const statusTitle = title || 'Video';
+			this.streamStatus.playing = true;
+			this.startTime = Date.now();
 
-				logger.warn(`Failed to play source (likely protected embed): ${videoSource}`);
-				await DiscordUtils.sendInfo(message, 'Stream Unavailable', 'The video source is a protected webpage and cannot be streamed directly to Voice. \n\n**Please watch using the Links provided above!** 🔗');
-			} else {
-				await ErrorUtils.handleError(error, `playing video: ${title || videoSource}`, message);
+			// Adjust start time if seeking
+			if (seekTime) {
+				logger.info(`Resuming playback from ${seekTime} seconds`);
+				this.startTime = Date.now() - (seekTime * 1000);
+				// Add seek option to inputs
+				// Note: For streaming, -ss before -i is faster.
+				// We need to modify executeStream to handle this or just pass it in inputForFfmpeg if it's an array?
+				// But prepareStream expects a string or readable stream.
+				// We can try adding it to inputOptions via a hack in executeStream
+				streamOpts.seekTime = seekTime;
 			}
 
-			if (this.controller && !this.controller.signal.aborted) this.controller.abort();
+			// Update activity
+			if (this.streamer.client.user) {
+				logger.info(`Setting activity to: Watching ${statusTitle}`);
+				this.streamer.client.user.setActivity(DiscordUtils.status_watch(statusTitle));
+			}
+
+			// Start stream
+			logger.info(`Starting stream for: ${title || videoSource}`);
+			await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, statusTitle, videoSource, resolvedHeaders);
+
+			await this.finalizeStream(message, tempFilePath);
+
+		} catch (error) {
+			await ErrorUtils.handleError(error, `playing video: ${videoSource}`, message);
 			this.markVideoAsFailed(videoSource);
-		} finally {
-			await this.finalizeStream(message, tempFile);
+
+			// Handle next item if present
+			if (!this.streamStatus.manualStop) { // Only advance if not manually stopped
+				await this.handleQueueAdvancement(message);
+			}
 		}
 	}
 

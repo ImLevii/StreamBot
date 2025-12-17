@@ -81,6 +81,12 @@ if (videos.length > 0) {
 // Event handlers
 client.on("ready", async () => {
 	await handleReady(client);
+	// Resume playback if state exists
+	// We need a dummy message object or similar context to resume, usually the saved text channel ID is enough to fetch the channel and create a context.
+	// But resumeState expects a Message. We might need to refactor resumeState to take client/channelId instead.
+	// For now, let's create a fake message context or modify resumeState.
+	// Modifying resumeState is better.
+	await streamingService.resumeState(client);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
